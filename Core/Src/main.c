@@ -82,8 +82,8 @@ void Timer_Interrupt_Handler(void)
 	uint32_t pot2_value = Get_ADC_Value(ADC_CHANNEL_4);
 	char line1_str[20] = {0};
 	char line2_str[20] = {0};
-	sprintf(line1_str, "P1:%04u   P2:%04u", (uint16_t)pot1_value, (uint16_t)pot2_value);
-	sprintf(line2_str, "ROT:%03u SWITCH:%s", rotary_counter, button_state ? " ON" : "OFF");
+	//sprintf(line1_str, "P1:%04u   P2:%04u", (uint16_t)pot1_value, (uint16_t)pot2_value);
+	//sprintf(line2_str, "ROT:%03u SWITCH:%s", rotary_counter, button_state ? " ON" : "OFF");
 	ssd1306_SetCursor(0, 0);
 	ssd1306_WriteString(line1_str, Font_7x10, White);
 	ssd1306_SetCursor(0, 11);
