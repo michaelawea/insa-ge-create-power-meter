@@ -88,6 +88,14 @@ void Timer_Interrupt_Handler(void)
 	ssd1306_WriteString(line1_str, Font_7x10, White);
 	ssd1306_SetCursor(0, 11);
 	ssd1306_WriteString(line2_str, Font_7x10, White);
+	
+	// Display "testmode" in the bottom right corner
+	// Font_7x10 means each character is 7 pixels wide
+	// "testmode" is 8 characters = 56 pixels wide
+	// Position at x = 128 - 56 = 72, y = 32 - 10 = 22
+	ssd1306_SetCursor(72, 22);
+	ssd1306_WriteString("testmode", Font_7x10, White);
+	
 	ssd1306_UpdateScreen();
 }
 
