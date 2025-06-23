@@ -1,18 +1,31 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
+  * @file           : productionmain.c
+  * @brief          : Production Main program body for STM32L052K6 Power Meter
   ******************************************************************************
   * @attention
   *
+  * Production Version for STM32L052K6T6 (32-pin LQFP)
+  * - 32KB Flash vs 64KB in test version
+  * - ADC channels: PA3 (ADC_IN3) and PA4 (ADC_IN4) for real voltage/current sensing
+  * - Optimized for real power measurement instead of potentiometer simulation
+  * - Memory optimized for 32KB Flash constraint
+  *
+  * Pin Mapping Changes from Test Version (STM32L053R8T6):
+  * OLD (Test)     → NEW (Production)
+  * PC0 (ADC_CH10) → PA3 (ADC_CH3)  - Voltage Input
+  * PC1 (ADC_CH11) → PA4 (ADC_CH4)  - Current Input
+  *
+  * Other pins remain the same:
+  * - PB5: Rotary Encoder Channel A
+  * - PB4: Rotary Encoder Channel B
+  * - PB3: User Button
+  * - PB6: I2C1_SCL (SSD1306 OLED)
+  * - PB7: I2C1_SDA (SSD1306 OLED)
+  *
   * Copyright (c) 2024 STMicroelectronics.
   * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -33,6 +46,15 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+// Production calibration constants for real power measurement
+#define VOLTAGE_SCALE_FACTOR    7.32f    // Voltage divider ratio (30V max → 3.3V ADC)
+#define CURRENT_SCALE_FACTOR    1.22f    // Current sensor ratio (5A max → 3.3V ADC)
+#define ADC_VREF                3.3f     // ADC reference voltage
+#define ADC_RESOLUTION          4095.0f  // 12-bit ADC resolution
+
+// Memory optimization: Reduce graph data points for 32KB Flash
+#define GRAPH_DATA_POINTS       32       // Reduced from 64 to save RAM
+#define MENU_TIMEOUT_MS         30000    // 30 second timeout for menu auto-return
 
 /* USER CODE END PD */
 
@@ -48,22 +70,65 @@ I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim6;
 
-UART_HandleTypeDef huart1;
-
 /* USER CODE BEGIN PV */
 static uint8_t rotary_state;
 static uint8_t rotary_counter;
 static uint8_t button_state;
+
+// Real power meter variables (production)
+static float measured_voltage = 0.0f;     // Real measured voltage (V)
+static float measured_current = 0.0f;     // Real measured current (A)
+static float calculated_power = 0.0f;     // Calculated power (W)
+static float accumulated_energy = 0.0f;   // Accumulated energy (Wh)
+static uint32_t last_timestamp = 0;       // For energy integration
+
+// Peak value tracking
+static float peak_voltage = 0.0f;
+static float peak_current = 0.0f;
+static float peak_power = 0.0f;
+
+// Button handling for reset functions
+static uint32_t button_press_time = 0;
+static uint8_t button_long_press_handled = 0;
+static uint32_t button_last_interrupt_time = 0;
+static uint8_t button_stable_state = 0;
+
+// Menu system variables
+typedef enum {
+    MENU_POWER_METER = 0,    // Main power meter display
+    MENU_MAIN,               // Main menu
+    MENU_PEAKS,              // Peak values display
+    MENU_GRAPHICS,           // Graphics display menu
+    MENU_GRAPHICS_SELECT,    // Graphics parameter selection
+    MENU_SETTINGS,           // Settings menu
+    MENU_RESET,              // Reset menu
+    MENU_ABOUT               // About/Info
+} MenuState_t;
+
+static MenuState_t current_menu = MENU_POWER_METER;
+static uint8_t menu_selection = 0;
+static uint8_t menu_changed = 1;
+static uint32_t last_activity_time = 0;
+
+// Rotary encoder debouncing variables
+static uint32_t rotary_last_interrupt_time = 0;
+
+// Graphics functionality variables (memory optimized)
+static float voltage_history[GRAPH_DATA_POINTS];
+static float current_history[GRAPH_DATA_POINTS];
+static float power_history[GRAPH_DATA_POINTS];
+static uint8_t graph_data_index = 0;
+static uint8_t graphics_parameter = 0;  // 0 = Voltage, 1 = Current, 2 = Power
+static uint32_t last_graph_update = 0;
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_I2C1_Init(void);
 static void MX_ADC_Init(void);
+static void MX_I2C1_Init(void);
 static void MX_TIM6_Init(void);
-static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -72,101 +137,712 @@ static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN 0 */
 
 /**
-  * @brief  Interrupt handler for TIM6 timer
-  * @note	This function is called when the timer is reloaded
-  *         It reads ADC values from potentiometer inputs and update screen infos
+  * @brief  Convert ADC value to real voltage measurement
+  * @param  adc_value Raw ADC value (0-4095)
+  * @retval Real voltage in volts (0-30V range)
+  */
+float Convert_ADC_to_Voltage(uint32_t adc_value)
+{
+    // Production ADC_CHANNEL_3 (PA3): Real voltage measurement with voltage divider
+    // ADC voltage = (adc_value / 4095) * 3.3V
+    // Real voltage = ADC voltage * voltage_divider_ratio
+    float adc_voltage = ((float)adc_value / ADC_RESOLUTION) * ADC_VREF;
+    return adc_voltage * VOLTAGE_SCALE_FACTOR;
+}
+
+/**
+  * @brief  Convert ADC value to real current measurement
+  * @param  adc_value Raw ADC value (0-4095)
+  * @retval Real current in amperes (0-5A range)
+  */
+float Convert_ADC_to_Current(uint32_t adc_value)
+{
+    // Production ADC_CHANNEL_4 (PA4): Real current measurement via current sensor
+    // ADC voltage = (adc_value / 4095) * 3.3V
+    // Real current = ADC voltage * current_sensor_ratio
+    float adc_voltage = ((float)adc_value / ADC_RESOLUTION) * ADC_VREF;
+    return adc_voltage * CURRENT_SCALE_FACTOR;
+}
+
+/**
+  * @brief  Calculate power from voltage and current
+  * @param  voltage Measured voltage in volts
+  * @param  current Measured current in amperes
+  * @retval Calculated power in watts
+  */
+float Calculate_Power(float voltage, float current)
+{
+    return voltage * current;
+}
+
+/**
+  * @brief  Update accumulated energy using trapezoidal integration
+  * @param  power Current power in watts
+  * @param  delta_time Time interval in milliseconds
+  */
+void Update_Energy(float power, uint32_t delta_time)
+{
+    // Convert delta_time from ms to hours for Wh calculation
+    float delta_hours = (float)delta_time / (1000.0f * 3600.0f);
+
+    // Integration: E += P * dt
+    accumulated_energy += power * delta_hours;
+}
+
+/**
+  * @brief  Update peak values if current values are higher
+  * @param  voltage Current voltage value
+  * @param  current Current current value
+  * @param  power Current power value
+  */
+void Update_Peaks(float voltage, float current, float power)
+{
+    if (voltage > peak_voltage) peak_voltage = voltage;
+    if (current > peak_current) peak_current = current;
+    if (power > peak_power) peak_power = power;
+}
+
+/**
+  * @brief  Reset all peak values to zero
+  */
+void Reset_Peaks(void)
+{
+    peak_voltage = 0.0f;
+    peak_current = 0.0f;
+    peak_power = 0.0f;
+}
+
+/**
+  * @brief  Reset accumulated energy to zero
+  */
+void Reset_Energy(void)
+{
+    accumulated_energy = 0.0f;
+}
+
+/**
+  * @brief  Handle rotary encoder input for menu navigation
+  * @param  direction: 1 for clockwise, -1 for counter-clockwise
+  */
+void Handle_Menu_Navigation(int8_t direction)
+{
+    last_activity_time = HAL_GetTick();
+    menu_changed = 1;
+
+    switch (current_menu) {
+        case MENU_MAIN:
+            if (direction > 0) {
+                menu_selection = (menu_selection + 1) % 5;
+            } else {
+                menu_selection = (menu_selection == 0) ? 4 : menu_selection - 1;
+            }
+            break;
+
+        case MENU_GRAPHICS_SELECT:
+            if (direction > 0) {
+                menu_selection = (menu_selection + 1) % 4;
+            } else {
+                menu_selection = (menu_selection == 0) ? 3 : menu_selection - 1;
+            }
+            break;
+
+        case MENU_SETTINGS:
+            if (direction > 0) {
+                menu_selection = (menu_selection + 1) % 2;
+            } else {
+                menu_selection = (menu_selection == 0) ? 1 : menu_selection - 1;
+            }
+            break;
+
+        case MENU_RESET:
+            if (direction > 0) {
+                menu_selection = (menu_selection + 1) % 3;
+            } else {
+                menu_selection = (menu_selection == 0) ? 2 : menu_selection - 1;
+            }
+            break;
+
+        default:
+            break;
+    }
+}
+
+/**
+  * @brief  Handle button press for menu actions
+  * @param  press_type: 0 = short press, 1 = long press
+  */
+void Handle_Menu_Action(uint8_t press_type)
+{
+    last_activity_time = HAL_GetTick();
+    menu_changed = 1;
+
+    if (press_type == 1) { // Long press - go back/up
+        switch (current_menu) {
+            case MENU_POWER_METER:
+                current_menu = MENU_MAIN;
+                menu_selection = 0;
+                break;
+
+            default:
+                current_menu = MENU_POWER_METER;
+                menu_selection = 0;
+                break;
+        }
+    } else { // Short press - enter/confirm
+        switch (current_menu) {
+            case MENU_POWER_METER:
+                // No action on short press in power meter mode
+                break;
+
+            case MENU_MAIN:
+                switch (menu_selection) {
+                    case 0: current_menu = MENU_POWER_METER; break;
+                    case 1: current_menu = MENU_PEAKS; break;
+                    case 2: current_menu = MENU_GRAPHICS_SELECT; menu_selection = 0; break;
+                    case 3: current_menu = MENU_SETTINGS; menu_selection = 0; break;
+                    case 4: current_menu = MENU_RESET; menu_selection = 0; break;
+                }
+                break;
+
+            case MENU_PEAKS:
+                current_menu = MENU_MAIN;
+                menu_selection = 1;
+                break;
+
+            case MENU_GRAPHICS_SELECT:
+                switch (menu_selection) {
+                    case 0:
+                        graphics_parameter = 0;
+                        current_menu = MENU_GRAPHICS;
+                        break;
+                    case 1:
+                        graphics_parameter = 1;
+                        current_menu = MENU_GRAPHICS;
+                        break;
+                    case 2:
+                        graphics_parameter = 2;
+                        current_menu = MENU_GRAPHICS;
+                        break;
+                    case 3:
+                        current_menu = MENU_MAIN;
+                        menu_selection = 2;
+                        break;
+                }
+                break;
+
+            case MENU_GRAPHICS:
+                current_menu = MENU_GRAPHICS_SELECT;
+                menu_selection = graphics_parameter;
+                break;
+
+            case MENU_SETTINGS:
+                switch (menu_selection) {
+                    case 0: current_menu = MENU_ABOUT; break;
+                    case 1: current_menu = MENU_MAIN; menu_selection = 3; break;
+                }
+                break;
+
+            case MENU_RESET:
+                switch (menu_selection) {
+                    case 0: Reset_Peaks(); current_menu = MENU_MAIN; menu_selection = 4; break;
+                    case 1: Reset_Energy(); current_menu = MENU_MAIN; menu_selection = 4; break;
+                    case 2: current_menu = MENU_MAIN; menu_selection = 4; break;
+                }
+                break;
+
+            case MENU_ABOUT:
+                current_menu = MENU_SETTINGS;
+                menu_selection = 0;
+                break;
+        }
+    }
+}
+
+/**
+  * @brief  Display current menu on OLED (memory optimized)
+  */
+void Display_Current_Menu(void)
+{
+    char line1[21] = {0};
+    char line2[21] = {0};
+    char line3[21] = {0};
+
+    ssd1306_Fill(Black);
+
+    switch (current_menu) {
+        case MENU_POWER_METER:
+            Display_Power_Meter();
+            return;
+
+        case MENU_MAIN:
+            {
+                const char* menu_items[5] = {
+                    " Power Meter",
+                    " Peak Values",
+                    " Graphics",
+                    " Settings",
+                    " Reset Options"
+                };
+
+                ssd1306_SetCursor(0, 0);
+                ssd1306_WriteString("=== MAIN MENU ===", Font_6x8, White);
+
+                uint8_t start_item = 0;
+                if (menu_selection >= 2) {
+                    start_item = menu_selection - 1;
+                    if (start_item > 2) start_item = 2;
+                }
+
+                for (uint8_t i = 0; i < 3 && (start_item + i) < 5; i++) {
+                    uint8_t item_index = start_item + i;
+                    char display_line[21];
+
+                    sprintf(display_line, "%s%s",
+                           (item_index == menu_selection) ? ">" : " ",
+                           menu_items[item_index]);
+
+                    ssd1306_SetCursor(0, 8 + (i * 8));
+                    ssd1306_WriteString(display_line, Font_6x8, White);
+                }
+
+                if (start_item > 0) {
+                    ssd1306_SetCursor(120, 8);
+                    ssd1306_WriteString("^", Font_6x8, White);
+                }
+                if (start_item + 3 < 5) {
+                    ssd1306_SetCursor(120, 24);
+                    ssd1306_WriteString("v", Font_6x8, White);
+                }
+            }
+            break;
+
+        case MENU_PEAKS:
+            ssd1306_SetCursor(0, 0);
+            ssd1306_WriteString("=== PEAK VALUES ===", Font_6x8, White);
+
+            int pv_int = (int)peak_voltage;
+            int pv_frac = (int)((peak_voltage - pv_int) * 10.0f);
+            int pi_int = (int)peak_current;
+            int pi_frac = (int)((peak_current - pi_int) * 100.0f);
+            int pp_int = (int)peak_power;
+            int pp_frac = (int)((peak_power - pp_int) * 10.0f);
+
+            sprintf(line1, "V: %d.%dV", pv_int, pv_frac);
+            sprintf(line2, "I: %d.%02dA", pi_int, pi_frac);
+            sprintf(line3, "P: %d.%dW", pp_int, pp_frac);
+
+            ssd1306_SetCursor(0, 10);
+            ssd1306_WriteString(line1, Font_7x10, White);
+            ssd1306_SetCursor(0, 20);
+            ssd1306_WriteString(line2, Font_7x10, White);
+            ssd1306_SetCursor(70, 20);
+            ssd1306_WriteString(line3, Font_7x10, White);
+            break;
+
+        case MENU_SETTINGS:
+            ssd1306_SetCursor(0, 0);
+            ssd1306_WriteString("=== SETTINGS ===", Font_6x8, White);
+
+            sprintf(line1, "%s About", (menu_selection == 0) ? ">" : " ");
+            sprintf(line2, "%s Back", (menu_selection == 1) ? ">" : " ");
+
+            ssd1306_SetCursor(0, 12);
+            ssd1306_WriteString(line1, Font_7x10, White);
+            ssd1306_SetCursor(0, 22);
+            ssd1306_WriteString(line2, Font_7x10, White);
+            break;
+
+        case MENU_RESET:
+            ssd1306_SetCursor(0, 0);
+            ssd1306_WriteString("=== RESET ===", Font_6x8, White);
+
+            sprintf(line1, "%s Reset Peaks", (menu_selection == 0) ? ">" : " ");
+            sprintf(line2, "%s Reset Energy", (menu_selection == 1) ? ">" : " ");
+            sprintf(line3, "%s Cancel", (menu_selection == 2) ? ">" : " ");
+
+            ssd1306_SetCursor(0, 8);
+            ssd1306_WriteString(line1, Font_6x8, White);
+            ssd1306_SetCursor(0, 16);
+            ssd1306_WriteString(line2, Font_6x8, White);
+            ssd1306_SetCursor(0, 24);
+            ssd1306_WriteString(line3, Font_6x8, White);
+            break;
+
+        case MENU_GRAPHICS_SELECT:
+            {
+                const char* graphics_items[4] = {
+                    " Voltage (V)",
+                    " Current (A)",
+                    " Power (W)",
+                    " Back"
+                };
+
+                ssd1306_SetCursor(0, 0);
+                ssd1306_WriteString("=== GRAPHICS ===", Font_6x8, White);
+
+                uint8_t start_item = 0;
+                if (menu_selection >= 2) {
+                    start_item = menu_selection - 1;
+                    if (start_item > 1) start_item = 1;
+                }
+
+                for (uint8_t i = 0; i < 3 && (start_item + i) < 4; i++) {
+                    uint8_t item_index = start_item + i;
+                    char display_line[21];
+
+                    sprintf(display_line, "%s%s",
+                           (item_index == menu_selection) ? ">" : " ",
+                           graphics_items[item_index]);
+
+                    ssd1306_SetCursor(0, 8 + (i * 8));
+                    ssd1306_WriteString(display_line, Font_6x8, White);
+                }
+
+                if (start_item > 0) {
+                    ssd1306_SetCursor(120, 8);
+                    ssd1306_WriteString("^", Font_6x8, White);
+                }
+                if (start_item + 3 < 4) {
+                    ssd1306_SetCursor(120, 24);
+                    ssd1306_WriteString("v", Font_6x8, White);
+                }
+            }
+            break;
+
+        case MENU_GRAPHICS:
+            Display_Graphics();
+            return;
+
+        case MENU_ABOUT:
+            ssd1306_SetCursor(0, 0);
+            ssd1306_WriteString("Power Meter v1.0", Font_7x10, White);
+            ssd1306_SetCursor(0, 12);
+            ssd1306_WriteString("STM32L052K6", Font_6x8, White);
+            ssd1306_SetCursor(0, 20);
+            ssd1306_WriteString("Production Board", Font_6x8, White);
+            ssd1306_SetCursor(0, 28);
+            ssd1306_WriteString("Real Power Meter", Font_6x8, White);
+            break;
+    }
+
+    ssd1306_UpdateScreen();
+}
+
+/**
+  * @brief  Update graphics data buffer with current values
+  */
+void Update_Graphics_Data(void)
+{
+    uint32_t current_time = HAL_GetTick();
+
+    if (current_time - last_graph_update > 200) {
+        voltage_history[graph_data_index] = measured_voltage;
+        current_history[graph_data_index] = measured_current;
+        power_history[graph_data_index] = calculated_power;
+
+        graph_data_index = (graph_data_index + 1) % GRAPH_DATA_POINTS;
+        last_graph_update = current_time;
+    }
+}
+
+/**
+  * @brief  Display graphics curve (optimized for 32KB Flash)
+  */
+void Display_Graphics(void)
+{
+    char title_str[21] = {0};
+    float max_value = 0.0f;
+    float* data_array;
+
+    ssd1306_Fill(Black);
+
+    if (graphics_parameter == 0) {
+        int v_int = (int)measured_voltage;
+        int v_frac = (int)((measured_voltage - v_int) * 10.0f);
+        sprintf(title_str, "Voltage: %d.%dV", v_int, v_frac);
+        data_array = voltage_history;
+        max_value = 30.0f;
+    } else if (graphics_parameter == 1) {
+        int i_int = (int)measured_current;
+        int i_frac = (int)((measured_current - i_int) * 100.0f);
+        sprintf(title_str, "Current: %d.%02dA", i_int, i_frac);
+        data_array = current_history;
+        max_value = 5.0f;
+    } else {
+        int p_int = (int)calculated_power;
+        int p_frac = (int)((calculated_power - p_int) * 10.0f);
+        sprintf(title_str, "Power: %d.%dW", p_int, p_frac);
+        data_array = power_history;
+        max_value = 150.0f;
+    }
+
+    ssd1306_SetCursor(0, 0);
+    ssd1306_WriteString(title_str, Font_6x8, White);
+
+    uint8_t graph_height = 20;
+    uint8_t graph_y_offset = 10;
+
+    // Draw axes
+    for (uint8_t y = 0; y < graph_height; y++) {
+        ssd1306_DrawPixel(10, graph_y_offset + y, White);
+    }
+    for (uint8_t x = 0; x < 110; x++) {
+        ssd1306_DrawPixel(10 + x, graph_y_offset + graph_height - 1, White);
+    }
+
+    // Plot data points (optimized for reduced data points)
+    for (uint8_t i = 0; i < GRAPH_DATA_POINTS - 1; i++) {
+        uint8_t data_index = (graph_data_index + i) % GRAPH_DATA_POINTS;
+        uint8_t next_index = (graph_data_index + i + 1) % GRAPH_DATA_POINTS;
+
+        uint8_t y1 = graph_y_offset + graph_height - 1 -
+                     (uint8_t)((data_array[data_index] / max_value) * (graph_height - 2));
+        uint8_t y2 = graph_y_offset + graph_height - 1 -
+                     (uint8_t)((data_array[next_index] / max_value) * (graph_height - 2));
+
+        uint8_t x1 = 11 + (i * 110) / (GRAPH_DATA_POINTS - 1);
+        uint8_t x2 = 11 + ((i + 1) * 110) / (GRAPH_DATA_POINTS - 1);
+
+        ssd1306_Line(x1, y1, x2, y2, White);
+    }
+
+    // Add scale labels
+    ssd1306_SetCursor(0, graph_y_offset);
+    if (graphics_parameter == 0) {
+        ssd1306_WriteString("30", Font_6x8, White);
+    } else if (graphics_parameter == 1) {
+        ssd1306_WriteString("5", Font_6x8, White);
+    } else {
+        ssd1306_WriteString("150", Font_6x8, White);
+    }
+
+    ssd1306_SetCursor(0, graph_y_offset + graph_height - 8);
+    ssd1306_WriteString("0", Font_6x8, White);
+
+    ssd1306_UpdateScreen();
+}
+
+/**
+  * @brief  Display power meter data (production version)
+  */
+void Display_Power_Meter(void)
+{
+    char line1_str[21] = {0};
+    char line2_str[21] = {0};
+    char line3_str[21] = {0};
+
+    // Convert float to integer parts for display
+    int v_int = (int)measured_voltage;
+    int v_frac = (int)((measured_voltage - v_int) * 10.0f);
+    if (v_frac < 0) v_frac = -v_frac;
+
+    int i_int = (int)measured_current;
+    int i_frac = (int)((measured_current - i_int) * 100.0f);
+    if (i_frac < 0) i_frac = -i_frac;
+
+    int p_int = (int)calculated_power;
+    int p_frac = (int)((calculated_power - p_int) * 10.0f);
+    if (p_frac < 0) p_frac = -p_frac;
+
+    // Energy handling
+    if (accumulated_energy < 1.0f) {
+        int e_wh = (int)(accumulated_energy * 1000.0f);
+        sprintf(line1_str, "V:%d.%dV  I:%d.%02dA", v_int, v_frac, i_int, i_frac);
+        sprintf(line2_str, "P:%d.%dW E:%dmWh", p_int, p_frac, e_wh);
+    } else {
+        int e_int = (int)accumulated_energy;
+        int e_frac = (int)((accumulated_energy - e_int) * 1000.0f);
+        if (e_frac < 0) e_frac = -e_frac;
+        sprintf(line1_str, "V:%d.%dV  I:%d.%02dA", v_int, v_frac, i_int, i_frac);
+        sprintf(line2_str, "P:%d.%dW E:%d.%03dkWh", p_int, p_frac, e_int, e_frac);
+    }
+
+    sprintf(line3_str, "ROT:%03u BTN:%s", rotary_counter, button_state ? "ON " : "OFF");
+
+    ssd1306_Fill(Black);
+    ssd1306_SetCursor(0, 0);
+    ssd1306_WriteString(line1_str, Font_7x10, White);
+    ssd1306_SetCursor(0, 11);
+    ssd1306_WriteString(line2_str, Font_7x10, White);
+    ssd1306_SetCursor(0, 22);
+    ssd1306_WriteString(line3_str, Font_6x8, White);
+    ssd1306_UpdateScreen();
+}
+
+/**
+  * @brief  Interrupt handler for TIM6 timer (production version)
+  * @note   This function reads real ADC values from voltage/current sensors
   */
 void Timer_Interrupt_Handler(void)
 {
-	uint32_t pot1_value = Get_ADC_Value(ADC_CHANNEL_3);
-	uint32_t pot2_value = Get_ADC_Value(ADC_CHANNEL_4);
-	char line1_str[20] = {0};
-	char line2_str[20] = {0};
-	//sprintf(line1_str, "P1:%04u   P2:%04u", (uint16_t)pot1_value, (uint16_t)pot2_value);
-	//sprintf(line2_str, "ROT:%03u SWITCH:%s", rotary_counter, button_state ? " ON" : "OFF");
-	ssd1306_SetCursor(0, 0);
-	ssd1306_WriteString(line1_str, Font_7x10, White);
-	ssd1306_SetCursor(0, 11);
-	ssd1306_WriteString(line2_str, Font_7x10, White);
-	
-	// Display "testmode" in the bottom right corner
-	// Font_7x10 means each character is 7 pixels wide
-	// "testmode" is 8 characters = 56 pixels wide
-	// Position at x = 128 - 56 = 72, y = 32 - 10 = 22
-	ssd1306_SetCursor(72, 22);
-	ssd1306_WriteString("testmode", Font_7x10, White);
-	
-	ssd1306_UpdateScreen();
+    // Read ADC values from real sensors (production pins)
+    uint32_t voltage_adc = Get_ADC_Value(ADC_CHANNEL_3);  // PA3 - Real voltage input
+    uint32_t current_adc = Get_ADC_Value(ADC_CHANNEL_4);  // PA4 - Real current input
+
+    // Convert ADC values to real physical quantities
+    measured_voltage = Convert_ADC_to_Voltage(voltage_adc);
+    measured_current = Convert_ADC_to_Current(current_adc);
+    calculated_power = Calculate_Power(measured_voltage, measured_current);
+
+    // Calculate time delta for energy integration
+    uint32_t current_timestamp = HAL_GetTick();
+    uint32_t delta_time = current_timestamp - last_timestamp;
+    last_timestamp = current_timestamp;
+
+    // Update accumulated energy
+    if (delta_time > 0 && delta_time < 1000) {
+        Update_Energy(calculated_power, delta_time);
+    }
+
+    // Update peak values
+    Update_Peaks(measured_voltage, measured_current, calculated_power);
+
+    // Update graphics data buffer
+    Update_Graphics_Data();
+
+    // Button long press detection
+    if (button_state && !button_long_press_handled) {
+        uint32_t press_duration = current_timestamp - button_press_time;
+        if (press_duration >= 2000) {
+            Handle_Menu_Action(1);
+            button_long_press_handled = 1;
+        }
+    }
+
+    // Auto-return to power meter
+    if (current_menu != MENU_POWER_METER &&
+        (current_timestamp - last_activity_time) > MENU_TIMEOUT_MS) {
+        current_menu = MENU_POWER_METER;
+        menu_selection = 0;
+        menu_changed = 1;
+    }
+
+    // Update display
+    if (menu_changed) {
+        Display_Current_Menu();
+        menu_changed = 0;
+    }
+    else if (current_menu == MENU_POWER_METER || current_menu == MENU_GRAPHICS) {
+        Display_Current_Menu();
+    }
 }
 
 /**
-  * @brief  Interrupt handler for User Button GPIO
-  * @note	This function is called when a rising edge is detected on User Button input pin
+  * @brief  Interrupt handler for User Button GPIO (production version)
+  * @note   Button pin might need to be changed due to PA4 conflict with ADC
   */
 void User_Button_Interrupt_Handler(void)
 {
-	button_state = HAL_GPIO_ReadPin(USER_BUTTON_GPIO_Port, USER_BUTTON_Pin);
+    uint32_t current_time = HAL_GetTick();
+    uint8_t raw_button_state = HAL_GPIO_ReadPin(USER_BUTTON_GPIO_Port, USER_BUTTON_Pin);
+
+    // Software debouncing
+    if ((current_time - button_last_interrupt_time) < 20) {
+        return;
+    }
+    button_last_interrupt_time = current_time;
+
+    if (raw_button_state == button_stable_state) {
+        return;
+    }
+
+    button_stable_state = raw_button_state;
+
+    if (button_stable_state && !button_state) {
+        // Button pressed
+        button_press_time = current_time;
+        button_long_press_handled = 0;
+        button_state = 1;
+    }
+    else if (!button_stable_state && button_state) {
+        // Button released
+        uint32_t press_duration = current_time - button_press_time;
+
+        if (!button_long_press_handled && press_duration < 2000) {
+            Handle_Menu_Action(0);
+        }
+        button_state = 0;
+    }
 }
 
 /**
-  * @brief  Interrupt handler for Rotary Encoder Channel A
-  * @note	This function is called when a rising edge is detected on channel A of the rotary encoder
+  * @brief  Interrupt handler for Rotary Encoder (same as test version)
   */
 void Rotary_Encoder_Interrupt_Handler(void)
 {
-	static int8_t rotary_buffer = 0;
-	/* Check for rotary encoder turned clockwise or counter-clockwise */
-	HAL_Delay(5);
-	uint8_t rotary_new = HAL_GPIO_ReadPin(ROT_CHA_GPIO_Port, ROT_CHA_Pin) << 1;
-	rotary_new += HAL_GPIO_ReadPin(ROT_CHB_GPIO_Port, ROT_CHB_Pin);
-	if (rotary_new != rotary_state) {
-		if (((rotary_state == 0b00) && (rotary_new == 0b10)) || ((rotary_state == 0b10) && (rotary_new == 0b11)) ||
-				((rotary_state == 0b11) && (rotary_new == 0b01)) || ((rotary_state == 0b01) && (rotary_new == 0b00))) {
-			rotary_buffer ++;
-		}
-		if (((rotary_state == 0b00) && (rotary_new == 0b01)) || ((rotary_state == 0b01) && (rotary_new == 0b11)) ||
-				((rotary_state == 0b11) && (rotary_new == 0b10)) || ((rotary_state == 0b10) && (rotary_new == 0b00))) {
-			rotary_buffer --;
-		}
-		rotary_state = rotary_new;
-		if (rotary_buffer > 3) {
-			rotary_counter ++;
-			rotary_buffer = 0;
-		}
-		if (rotary_buffer < -3) {
-			rotary_counter --;
-			rotary_buffer = 0;
-		}
-	}
+    static int8_t rotary_buffer = 0;
+    uint32_t current_time = HAL_GetTick();
+
+    if ((current_time - rotary_last_interrupt_time) < 5) {
+        return;
+    }
+    rotary_last_interrupt_time = current_time;
+
+    uint8_t rotary_new = HAL_GPIO_ReadPin(ROT_CHA_GPIO_Port, ROT_CHA_Pin) << 1;
+    rotary_new += HAL_GPIO_ReadPin(ROT_CHB_GPIO_Port, ROT_CHB_Pin);
+
+    if (rotary_new != rotary_state) {
+        int8_t direction = 0;
+
+        // Clockwise transitions
+        if (((rotary_state == 0b00) && (rotary_new == 0b10)) ||
+            ((rotary_state == 0b10) && (rotary_new == 0b11)) ||
+            ((rotary_state == 0b11) && (rotary_new == 0b01)) ||
+            ((rotary_state == 0b01) && (rotary_new == 0b00))) {
+            rotary_buffer++;
+        }
+
+        // Counter-clockwise transitions
+        if (((rotary_state == 0b00) && (rotary_new == 0b01)) ||
+            ((rotary_state == 0b01) && (rotary_new == 0b11)) ||
+            ((rotary_state == 0b11) && (rotary_new == 0b10)) ||
+            ((rotary_state == 0b10) && (rotary_new == 0b00))) {
+            rotary_buffer--;
+        }
+
+        rotary_state = rotary_new;
+
+        if (rotary_buffer > 3) {
+            rotary_counter++;
+            rotary_buffer = 0;
+            direction = 1;
+        }
+        if (rotary_buffer < -3) {
+            rotary_counter--;
+            rotary_buffer = 0;
+            direction = -1;
+        }
+
+        if (direction != 0) {
+            Handle_Menu_Navigation(direction);
+        }
+    }
 }
 
 /**
-  * @brief  Start a conversion and return the value converted.
-  * @note   This function waits for the end of conversion in a blocking way
-  * @param  hadc ADC handle
-  * @param  adc_channel Channel macro such as ADC_CHANNEL_0, ADC_CHANNEL_1, etc.
+  * @brief  Get ADC value from specified channel (production version)
+  * @param  adc_channel Channel macro (ADC_CHANNEL_3 or ADC_CHANNEL_4)
   * @retval Channel converted value
   */
 uint32_t Get_ADC_Value(uint32_t adc_channel)
 {
-	/* Disable all previous channel configuration */
-	hadc.Instance->CHSELR = 0;
-	ADC_ChannelConfTypeDef sConfig = {0};
-	sConfig.Channel = adc_channel;
-	sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
-	if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	if (HAL_ADC_Start(&hadc) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	if (HAL_ADC_PollForConversion(&hadc, 100) != HAL_OK)
-	{
-		Error_Handler();
-	}
-	return HAL_ADC_GetValue(&hadc);
+    hadc.Instance->CHSELR = 0;
+    ADC_ChannelConfTypeDef sConfig = {0};
+    sConfig.Channel = adc_channel;
+    sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
+    if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_ADC_Start(&hadc) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_ADC_PollForConversion(&hadc, 100) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    return HAL_ADC_GetValue(&hadc);
 }
 /* USER CODE END 0 */
 
@@ -199,16 +875,38 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_I2C1_Init();
   MX_ADC_Init();
+  MX_I2C1_Init();
   MX_TIM6_Init();
-  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  // Initialize OLED display
   ssd1306_Init();
   ssd1306_Fill(Black);
+  ssd1306_SetCursor(0, 0);
+  ssd1306_WriteString("Power Meter v1.0", Font_7x10, White);
+  ssd1306_SetCursor(0, 11);
+  ssd1306_WriteString("Production Ready", Font_7x10, White);
+  ssd1306_SetCursor(0, 22);
+  ssd1306_WriteString("STM32L052K6", Font_6x8, White);
   ssd1306_UpdateScreen();
-  HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_SET);
+
+  // Initialize power meter variables
+  last_timestamp = HAL_GetTick();
+  last_activity_time = HAL_GetTick();
+  Reset_Energy();
+  Reset_Peaks();
+
+  // Initialize menu system
+  current_menu = MENU_POWER_METER;
+  menu_selection = 0;
+  menu_changed = 1;
+
+  // Start timer for periodic measurements
   HAL_TIM_Base_Start_IT(&htim6);
+
+  // Brief startup delay
+  HAL_Delay(1000);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -266,8 +964,7 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART1|RCC_PERIPHCLK_I2C1;
-  PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK2;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_I2C1;
   PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_PCLK1;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
@@ -276,7 +973,7 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief ADC Initialization Function
+  * @brief ADC Initialization Function (Production - Channels 3&4)
   * @param None
   * @retval None
   */
@@ -319,7 +1016,7 @@ static void MX_ADC_Init(void)
 
   /** Configure for the selected ADC regular channel to be converted.
   */
-  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Channel = ADC_CHANNEL_3;  // PA3 - Voltage Input
   sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
   if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
   {
@@ -328,7 +1025,7 @@ static void MX_ADC_Init(void)
 
   /** Configure for the selected ADC regular channel to be converted.
   */
-  sConfig.Channel = ADC_CHANNEL_4;
+  sConfig.Channel = ADC_CHANNEL_4;  // PA4 - Current Input (NOTE: Pin conflict with button!)
   if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -340,7 +1037,7 @@ static void MX_ADC_Init(void)
 }
 
 /**
-  * @brief I2C1 Initialization Function
+  * @brief I2C1 Initialization Function (Same as test version)
   * @param None
   * @retval None
   */
@@ -355,7 +1052,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x00B07CB4;
+  hi2c1.Init.Timing = 0x0060112F;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -388,7 +1085,7 @@ static void MX_I2C1_Init(void)
 }
 
 /**
-  * @brief TIM6 Initialization Function
+  * @brief TIM6 Initialization Function (Same as test version)
   * @param None
   * @retval None
   */
@@ -405,9 +1102,9 @@ static void MX_TIM6_Init(void)
 
   /* USER CODE END TIM6_Init 1 */
   htim6.Instance = TIM6;
-  htim6.Init.Prescaler = 31999;
+  htim6.Init.Prescaler = 2096;
   htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim6.Init.Period = 99;
+  htim6.Init.Period = 999;
   htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
   {
@@ -426,42 +1123,7 @@ static void MX_TIM6_Init(void)
 }
 
 /**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART1_Init 0 */
-
-  /* USER CODE END USART1_Init 0 */
-
-  /* USER CODE BEGIN USART1_Init 1 */
-
-  /* USER CODE END USART1_Init 1 */
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART1_Init 2 */
-
-  /* USER CODE END USART1_Init 2 */
-
-}
-
-/**
-  * @brief GPIO Initialization Function
+  * @brief GPIO Initialization Function (Production pin mapping)
   * @param None
   * @retval None
   */
@@ -469,36 +1131,43 @@ static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
+
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LED_RED_GPIO_Port, LED_RED_Pin, GPIO_PIN_RESET);
+  /*Configure GPIO pin : USER_BUTTON_Pin (PB3) */
+  GPIO_InitStruct.Pin = USER_BUTTON_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(USER_BUTTON_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LED_RED_Pin */
-  GPIO_InitStruct.Pin = LED_RED_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LED_RED_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : USER_BUTTON_Pin ROT_CHB_Pin ROT_CHA_Pin */
-  GPIO_InitStruct.Pin = USER_BUTTON_Pin|ROT_CHB_Pin|ROT_CHA_Pin;
+  /*Configure GPIO pin : ROT_CHA_Pin (PA0) */
+  GPIO_InitStruct.Pin = ROT_CHA_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  HAL_GPIO_Init(ROT_CHA_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : ROT_CHB_Pin (PA1) */
+  GPIO_InitStruct.Pin = ROT_CHB_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(ROT_CHB_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI0_1_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(EXTI0_1_IRQn);
+
   HAL_NVIC_SetPriority(EXTI2_3_IRQn, 2, 0);
   HAL_NVIC_EnableIRQ(EXTI2_3_IRQn);
 
-  HAL_NVIC_SetPriority(EXTI4_15_IRQn, 1, 0);
+  HAL_NVIC_SetPriority(EXTI4_15_IRQn, 2, 0);
   HAL_NVIC_EnableIRQ(EXTI4_15_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
+
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
