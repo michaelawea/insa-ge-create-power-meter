@@ -146,7 +146,7 @@ void SysTick_Handler(void)
 void EXTI2_3_IRQHandler(void)
 {
   /* USER CODE BEGIN EXTI2_3_IRQn 0 */
-  User_Button_Interrupt_Handler();
+  Gestionnaire_Interruption_Bouton();
   /* USER CODE END EXTI2_3_IRQn 0 */
   HAL_GPIO_EXTI_IRQHandler(USER_BUTTON_Pin);
   /* USER CODE BEGIN EXTI2_3_IRQn 1 */
@@ -160,7 +160,7 @@ void EXTI2_3_IRQHandler(void)
 void EXTI4_15_IRQHandler(void)
 {
   /* USER CODE BEGIN EXTI4_15_IRQn 0 */
-  Rotary_Encoder_Interrupt_Handler();
+  Gestionnaire_Interruption_Encodeur();
   /* USER CODE END EXTI4_15_IRQn 0 */
   HAL_GPIO_EXTI_IRQHandler(ROT_CHB_Pin);
   HAL_GPIO_EXTI_IRQHandler(ROT_CHA_Pin);
@@ -175,7 +175,7 @@ void EXTI4_15_IRQHandler(void)
 void TIM6_DAC_IRQHandler(void)
 {
   /* USER CODE BEGIN TIM6_DAC_IRQn 0 */
-  Timer_Interrupt_Handler();
+  Gestionnaire_Interruption_Timer();
   /* USER CODE END TIM6_DAC_IRQn 0 */
   HAL_TIM_IRQHandler(&htim6);
   /* USER CODE BEGIN TIM6_DAC_IRQn 1 */

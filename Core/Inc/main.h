@@ -53,10 +53,10 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-void Timer_Interrupt_Handler(void);
-void User_Button_Interrupt_Handler(void);
-void Rotary_Encoder_Interrupt_Handler(void);
-uint32_t Get_ADC_Value(uint32_t adc_channel);
+void Gestionnaire_Interruption_Timer(void);
+void Gestionnaire_Interruption_Bouton(void);
+void Gestionnaire_Interruption_Encodeur(void);
+uint32_t Lire_Valeur_ADC(uint32_t canal_adc);
 
 /* USER CODE END EFP */
 
