@@ -47,8 +47,8 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 // Production calibration constants for real power measurement
-#define VOLTAGE_SCALE_FACTOR    7.32f    // Voltage divider ratio (30V max → 3.3V ADC)
-#define CURRENT_SCALE_FACTOR    1.22f    // Current sensor ratio (5A max → 3.3V ADC)
+#define VOLTAGE_SCALE_FACTOR    2.15f    // Voltage divider ratio (30V max → 3.3V ADC)
+#define CURRENT_SCALE_FACTOR    3.59f    // Current sensor ratio (5A max → 3.3V ADC)
 #define ADC_VREF                3.3f     // ADC reference voltage
 #define ADC_RESOLUTION          4095.0f  // 12-bit ADC resolution
 
