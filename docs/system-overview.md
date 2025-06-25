@@ -1,122 +1,70 @@
 # STM32 Power Meter - System Overview
 
-## 🏗️ Code Logic Architecture
+## System Architecture
 
-The STM32 Power Meter operates on a timer-driven interrupt system with modular design:
+Looking at the system architecture diagram below, the power meter is built around three main interrupt sources that drive the entire system:
 
-### Interrupt System (Core Control)
-```
-TIM6 (100ms) ──► Timer ISR ──► Measurement & Display Update
-GPIO EXTI    ──► GPIO ISR  ──► User Input Processing  
-SysTick (1ms)──► SysTick   ──► HAL Tick Update
-```
+![System Architecture](system-overview-diagram.png)
 
-### System Flow Overview
+*The diagram above shows how the interrupt system drives the entire power meter operation. The 100ms timer triggers measurements, GPIO interrupts handle user input, and everything flows through the menu system to the display.*
 
-1. **Timer-Driven Measurement (100ms cycle)**
-   - TIM6 triggers ADC conversion every 100ms
-   - Read voltage (PA4) and current (PA3) channels
-   - Convert raw ADC values using calibration constants
-   - Calculate power (P = V × I) and update energy accumulation
-   - Update peak value tracking
-   - Refresh display if menu state changed
+The whole thing works pretty simply - there's a 100ms timer that kicks off measurements, GPIO interrupts that handle user input, and a 1ms SysTick for general housekeeping.
 
-2. **User Input Processing**
-   - Button (PB3): Debounced 20ms, detects short/long press
-   - Encoder (PB4/PB5): Debounced 5ms, detects rotation direction
-   - Input events trigger menu navigation functions
-   - Menu system updates current state and selection
+## How the Code Works
 
-3. **Menu State Management**
-   - 7 menu states: POWER_METER, MAIN, PEAKS, GRAPHICS, SETTINGS, RESET, ABOUT
-   - Navigation controlled by encoder rotation
-   - Selection confirmed by button press
-   - 30-second timeout returns to POWER_METER display
+When you power on the device, it sits in the main power meter display showing voltage, current, power and energy. Every 100ms, TIM6 fires an interrupt that:
 
-4. **Display System**
-   - Updates triggered by menu state changes
-   - Three main display modes:
-     - Power Meter: Real-time V, I, P, E values
-     - Graphics: Historical data plots (32 data points)
-     - Menu: Navigation interface
-   - SSD1306 OLED driver handles all screen operations
+- Grabs ADC readings from PA3 (current sensor) and PA4 (voltage divider)
+- Runs the conversion math using those scale factors (7.32 for voltage, 1.22 for current)
+- Calculates power and updates the energy counter
+- Keeps track of peak values
+- Updates the display if something changed
 
-5. **Data Processing Pipeline**
-   ```
-   ADC Raw Values → Calibration → Power Calculation → Peak Tracking
-                                      ↓
-   Graphics History ← Menu System ← Display Functions
-   ```
+The user interface is handled by separate GPIO interrupts. The button on PB3 gets debounced over 20ms and can detect short presses vs long presses. The rotary encoder on PB4/PB5 gets debounced over 5ms and figures out which direction you're turning.
 
-### Key Constants
-- **Voltage Scale Factor**: 7.32f (for 0-30V range)
-- **Current Scale Factor**: 1.22f (for 0-5A range)  
-- **ADC Reference**: 3.3V, 12-bit resolution (0-4095)
+All the menu logic is pretty straightforward - there are 7 different states (POWER_METER, MAIN, PEAKS, etc.) and the encoder/button combo lets you navigate between them. If you don't touch anything for 30 seconds, it automatically goes back to the main power display.
 
-## 🎮 User Testing Flow
+The graphics system keeps 32 data points of history for voltage, current and power so you can see trends over time. The display functions just read from these buffers and draw whatever menu or graph you're looking at.
 
-### Basic Operation Test
-1. **Power On**
-   - Device starts in POWER_METER mode
-   - Display shows: `V:0.0V  I:0.00A  P:0.0W  E:0mWh`
+## Constants and Calibration
 
-2. **Enter Menu System**
-   - **Long press button** (>2.5 seconds)
-   - Display changes to MAIN menu
-   - Shows: `=== MAIN MENU ===`
+The measurement accuracy depends on these calibration values:
+- Voltage scale factor: 7.32 (converts ADC reading to actual voltage)
+- Current scale factor: 1.22 (converts ADC reading to actual current) 
+- ADC reference: 3.3V with 12-bit resolution (0-4095 counts)
 
-3. **Navigate Menu Options**
-   - **Rotate encoder clockwise** → Move down menu list
-   - **Rotate encoder counter-clockwise** → Move up menu list
-   - Available options: Power Meter, Peak Values, Graphics, Settings, Reset Options
+## Testing the User Interface
 
-4. **Select Menu Items**
-   - **Short press button** → Enter selected menu
-   - Each menu has specific functions:
-     - **Peak Values**: View maximum recorded V, I, P
-     - **Graphics**: Select parameter (voltage/current/power) for real-time plotting
-     - **Settings**: System information and about screen
-     - **Reset Options**: Clear energy, peaks, or all data
+When you want to test the device, here's what you do:
 
-5. **Return Navigation**
-   - **Press button** in sub-menus → Return to MAIN menu
-   - **Wait 30 seconds** → Auto-return to POWER_METER display
-   - **Navigate to "Power Meter"** → Manual return to main display
+**Start with the power display** - When you first turn it on, you'll see the voltage, current, power and energy readings updating every 100ms.
 
-### Complete Test Sequence
-```
-Power On → POWER_METER Display
-    ↓ (Long Press)
-MAIN Menu → Navigate with Encoder
-    ↓ (Short Press)
-PEAKS Menu → View max values → Return
-    ↓ (Navigate & Select)
-GRAPHICS Menu → Select parameter → View plot → Return
-    ↓ (Navigate & Select) 
-SETTINGS Menu → View info → Return
-    ↓ (Navigate & Select)
-RESET Menu → Reset data → Return
-    ↓ (30s timeout or select Power Meter)
-POWER_METER Display (Complete cycle)
-```
+**Get into the menu** - Hold down the button for more than 2.5 seconds. The screen will switch to show the main menu.
 
-## 🔧 Hardware Integration
+**Navigate around** - Turn the encoder knob clockwise or counter-clockwise to move between menu options. You'll see the selection highlight move up and down.
 
-- **MCU**: STM32L052K6T6 (32KB Flash, 8KB RAM)
-- **Display**: SSD1306 128×64 OLED via I2C1
-- **Inputs**: 12-bit ADC on PA3 (current), PA4 (voltage)
-- **User Interface**: Rotary encoder (PB4/PB5) + button (PB3)
-- **Update Rate**: 100ms measurement cycle, 200ms graphics update
+**Select stuff** - When you find what you want, press the button briefly to select it. This takes you into that submenu.
 
-## 📊 Key Features
+**Try each menu:**
+- Peak Values: Shows the highest voltage, current and power you've measured
+- Graphics: Lets you pick voltage, current or power to see a real-time graph
+- Settings: Just shows some basic info about the device
+- Reset Options: Clears different types of data
 
-- **Real-time measurement** with 100ms refresh rate
-- **Energy accumulation** with mWh/kWh automatic scaling
-- **Peak value tracking** for load characterization  
-- **Historical plotting** with 32-point circular buffer
-- **Menu-driven interface** with encoder navigation
-- **Auto-timeout protection** prevents menu lock-up
-- **Calibrated measurements** with adjustable scale factors
+**Getting back** - From any submenu, press the button to go back to the main menu. Or just wait 30 seconds and it'll automatically return to the power display.
+
+The whole interface is pretty simple - just the encoder to navigate and the button to select. If you get lost, wait 30 seconds and you'll be back at the main power display.
+
+## Hardware Setup
+
+The hardware is straightforward:
+- STM32L052K6T6 microcontroller (32KB flash, 8KB RAM)
+- SSD1306 OLED display connected via I2C
+- Voltage measurement on PA4 (through voltage divider)
+- Current measurement on PA3 (from current sensor)
+- Rotary encoder on PB4/PB5 with button on PB3
+
+Everything runs on 3.3V and the measurements update 10 times per second. The graphics buffer holds about 6 seconds worth of data (32 points at 200ms intervals).
 
 ---
-*System Overview v1.0 | STM32L052K6T6 Power Meter*
+*Written for the STM32L052K6T6 Power Meter project*
