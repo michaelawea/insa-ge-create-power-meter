@@ -304,120 +304,98 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-    [*] --> POWER_METER : System Start
+    [*] --> POWER_METER : System_Start
     
     state POWER_METER {
         [*] --> DisplayValues
-        DisplayValues : Display V, I, P, E
-        DisplayValues : Auto-refresh 100ms
-        DisplayValues : Real-time Mode
+        DisplayValues --> DisplayValues : Update_100ms
     }
     
     state MAIN {
         [*] --> ShowOptions
-        ShowOptions : 1. Power Meter
-        ShowOptions : 2. Peak Values
-        ShowOptions : 3. Graphics
-        ShowOptions : 4. Settings
-        ShowOptions : 5. Reset Options
-        ShowOptions : Navigation: Encoder
-        ShowOptions : Selection: Button
+        ShowOptions --> ShowOptions : Encoder_Navigate
     }
     
     state PEAKS {
         [*] --> ShowPeaks
-        ShowPeaks : Peak Voltage: XX.XX V
-        ShowPeaks : Peak Current: XX.XX A  
-        ShowPeaks : Peak Power: XX.XX W
-        ShowPeaks : Read-only Display
+        ShowPeaks --> ShowPeaks : Display_Values
     }
     
     state GRAPHICS_SELECT {
         [*] --> SelectParam
-        SelectParam : 1. Voltage Graph
-        SelectParam : 2. Current Graph
-        SelectParam : 3. Power Graph
-        SelectParam : 4. Back
+        SelectParam --> SelectParam : Navigate_Options
     }
     
     state GRAPHICS {
         [*] --> ShowGraph
-        ShowGraph : Real-time Plot
-        ShowGraph : 32 Data Points
-        ShowGraph : Auto-refresh
-        ShowGraph : Selected Parameter
+        ShowGraph --> ShowGraph : Update_Graph
     }
     
     state SETTINGS {
         [*] --> ShowSettings
-        ShowSettings : 1. About
-        ShowSettings : 2. Back
+        ShowSettings --> ShowSettings : Show_Menu
     }
     
     state RESET {
         [*] --> ShowResetOptions
-        ShowResetOptions : 1. Reset Energy
-        ShowResetOptions : 2. Reset Peaks
-        ShowResetOptions : 3. Back
+        ShowResetOptions --> ShowResetOptions : Show_Options
     }
     
     state ABOUT {
         [*] --> ShowInfo
-        ShowInfo : Version: 1.0.0
-        ShowInfo : MCU: STM32L052K6
-        ShowInfo : Flash: 32KB
-        ShowInfo : RAM: 8KB
+        ShowInfo --> ShowInfo : Display_Info
     }
     
-    %% Transitions from POWER_METER
-    POWER_METER --> MAIN : Long Press
+    %% Main transitions
+    POWER_METER --> MAIN : Long_Press
     
-    %% Transitions from MAIN
-    MAIN --> POWER_METER : Select "Power Meter"
-    MAIN --> PEAKS : Select "Peak Values" 
-    MAIN --> GRAPHICS_SELECT : Select "Graphics"
-    MAIN --> SETTINGS : Select "Settings"
-    MAIN --> RESET : Select "Reset Options"
+    %% From MAIN menu
+    MAIN --> POWER_METER : Select_Power_Meter
+    MAIN --> PEAKS : Select_Peak_Values
+    MAIN --> GRAPHICS_SELECT : Select_Graphics
+    MAIN --> SETTINGS : Select_Settings
+    MAIN --> RESET : Select_Reset_Options
     
-    %% Transitions from sub-menus back to MAIN
-    PEAKS --> MAIN : Any Button Press
-    GRAPHICS_SELECT --> MAIN : Select "Back"
-    SETTINGS --> MAIN : Select "Back"
-    RESET --> MAIN : Any Selection
+    %% Return to MAIN
+    PEAKS --> MAIN : Any_Button_Press
+    GRAPHICS_SELECT --> MAIN : Select_Back
+    SETTINGS --> MAIN : Select_Back
+    RESET --> MAIN : Any_Selection
     
     %% Graphics flow
-    GRAPHICS_SELECT --> GRAPHICS : Select Parameter
-    GRAPHICS --> GRAPHICS_SELECT : Any Button Press
+    GRAPHICS_SELECT --> GRAPHICS : Select_Parameter
+    GRAPHICS --> GRAPHICS_SELECT : Any_Button_Press
     
     %% Settings flow
-    SETTINGS --> ABOUT : Select "About"
-    ABOUT --> SETTINGS : Any Button Press
+    SETTINGS --> ABOUT : Select_About
+    ABOUT --> SETTINGS : Any_Button_Press
     
     %% Timeout transitions (30s)
-    MAIN --> POWER_METER : 30s Timeout
-    PEAKS --> POWER_METER : 30s Timeout
-    GRAPHICS_SELECT --> POWER_METER : 30s Timeout
-    GRAPHICS --> POWER_METER : 30s Timeout
-    SETTINGS --> POWER_METER : 30s Timeout
-    RESET --> POWER_METER : 30s Timeout
-    ABOUT --> POWER_METER : 30s Timeout
+    MAIN --> POWER_METER : Timeout_30s
+    PEAKS --> POWER_METER : Timeout_30s
+    GRAPHICS_SELECT --> POWER_METER : Timeout_30s
+    GRAPHICS --> POWER_METER : Timeout_30s
+    SETTINGS --> POWER_METER : Timeout_30s
+    RESET --> POWER_METER : Timeout_30s
+    ABOUT --> POWER_METER : Timeout_30s
     
     note right of POWER_METER
-        Default state
-        Shows live measurements
-        V, I, P, Energy
+        Default state - Shows live measurements
+        Voltage, Current, Power, Energy
+        Auto-refresh every 100ms
     end note
     
     note right of MAIN
-        Main menu hub
-        Access all functions
-        Encoder navigation
+        Main menu hub - Access all functions
+        1. Power Meter  2. Peak Values
+        3. Graphics     4. Settings  
+        5. Reset Options
     end note
     
     note right of GRAPHICS
-        Real-time plotting
-        Historical data view
-        Parameter selection
+        Real-time plotting system
+        Historical data view (32 points)
+        Selectable parameters (V/I/P)
     end note
 ```
 
