@@ -14,8 +14,8 @@
   *
   * Pin Mapping Changes from Test Version (STM32L053R8T6):
   * OLD (Test)     → NEW (Production)
-  * PC0 (ADC_CH10) → PA3 (ADC_CH3)  - Voltage Input
-  * PC1 (ADC_CH11) → PA4 (ADC_CH4)  - Current Input
+  * PC0 (ADC_CH10) → PA4 (ADC_CH4)  - Voltage Input
+  * PC1 (ADC_CH11) → PA3 (ADC_CH3)  - Current Input
   *
   * Other pins remain the same:
   * - PB5: Rotary Encoder Channel A
@@ -47,8 +47,10 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 // Production calibration constants for real power measurement
-#define VOLTAGE_SCALE_FACTOR    2.15f    // Voltage divider ratio (30V max → 3.3V ADC)
-#define CURRENT_SCALE_FACTOR    3.59f    // Current sensor ratio (5A max → 3.3V ADC)
+#define VOLTAGE_SCALE_FACTOR    7.32f    // 分压倍率 (硬件常数)
+#define VOLTAGE_GAIN            1.36f   // 斜率校正 m
+#define VOLTAGE_OFFSET         -0.962f   // 零点校正 b (单位 V)
+#define CURRENT_SCALE_FACTOR    1.22f    // Current sensor ratio (5A max → 3.3V ADC)
 #define ADC_VREF                3.3f     // ADC reference voltage
 #define ADC_RESOLUTION          4095.0f  // 12-bit ADC resolution
 
@@ -143,11 +145,14 @@ static void MX_TIM6_Init(void);
   */
 float Convert_ADC_to_Voltage(uint32_t adc_value)
 {
-    // Production ADC_CHANNEL_3 (PA3): Real voltage measurement with voltage divider
-    // ADC voltage = (adc_value / 4095) * 3.3V
-    // Real voltage = ADC voltage * voltage_divider_ratio
+    // ADC 读数转换为 ADC 端电压
     float adc_voltage = ((float)adc_value / ADC_RESOLUTION) * ADC_VREF;
-    return adc_voltage * VOLTAGE_SCALE_FACTOR;
+
+    // 经过分压倍率换算到输入侧（仍未校正）
+    float measured_voltage = adc_voltage * VOLTAGE_SCALE_FACTOR;
+
+    // 线性校正：y = m·x + b
+    return measured_voltage * VOLTAGE_GAIN + VOLTAGE_OFFSET;
 }
 
 /**
@@ -157,11 +162,22 @@ float Convert_ADC_to_Voltage(uint32_t adc_value)
   */
 float Convert_ADC_to_Current(uint32_t adc_value)
 {
-    // Production ADC_CHANNEL_4 (PA4): Real current measurement via current sensor
+    // Production ADC_CHANNEL_3 (PA3): Real current measurement via current sensor
     // ADC voltage = (adc_value / 4095) * 3.3V
-    // Real current = ADC voltage * current_sensor_ratio
+    // Apply offset and scale corrections
     float adc_voltage = ((float)adc_value / ADC_RESOLUTION) * ADC_VREF;
-    return adc_voltage * CURRENT_SCALE_FACTOR;
+    float raw_current = adc_voltage * CURRENT_SCALE_FACTOR;
+    
+    // Remove 2.15A offset and apply scale correction (fine-tuned)
+    // Real current = (displayed_current - offset) / 0.23
+    float corrected_current = (raw_current - 2.15f) / 0.245f;
+    
+    // Ensure current doesn't go negative
+    if (corrected_current < 0.0f) {
+        corrected_current = 0.0f;
+    }
+    
+    return corrected_current;
 }
 
 /**
@@ -644,17 +660,27 @@ void Display_Power_Meter(void)
     int p_frac = (int)((calculated_power - p_int) * 10.0f);
     if (p_frac < 0) p_frac = -p_frac;
 
-    // Energy handling
+    // Energy handling with three scales: mWh -> Wh -> kWh
     if (accumulated_energy < 1.0f) {
-        int e_wh = (int)(accumulated_energy * 1000.0f);
+        // Less than 1 Wh: display in mWh
+        int e_mwh = (int)(accumulated_energy * 1000.0f);
         sprintf(line1_str, "V:%d.%dV  I:%d.%02dA", v_int, v_frac, i_int, i_frac);
-        sprintf(line2_str, "P:%d.%dW E:%dmWh", p_int, p_frac, e_wh);
+        sprintf(line2_str, "P:%d.%dW E:%dmWh", p_int, p_frac, e_mwh);
+    } else if (accumulated_energy < 1000.0f) {
+        // Between 1 Wh and 1000 Wh: display in Wh
+        int e_wh_int = (int)accumulated_energy;
+        int e_wh_frac = (int)((accumulated_energy - e_wh_int) * 100.0f);
+        if (e_wh_frac < 0) e_wh_frac = -e_wh_frac;
+        sprintf(line1_str, "V:%d.%dV  I:%d.%02dA", v_int, v_frac, i_int, i_frac);
+        sprintf(line2_str, "P:%d.%dW E:%d.%02dWh", p_int, p_frac, e_wh_int, e_wh_frac);
     } else {
-        int e_int = (int)accumulated_energy;
-        int e_frac = (int)((accumulated_energy - e_int) * 1000.0f);
-        if (e_frac < 0) e_frac = -e_frac;
+        // 1000 Wh and above: display in kWh
+        float e_kwh = accumulated_energy / 1000.0f;
+        int e_kwh_int = (int)e_kwh;
+        int e_kwh_frac = (int)((e_kwh - e_kwh_int) * 1000.0f);
+        if (e_kwh_frac < 0) e_kwh_frac = -e_kwh_frac;
         sprintf(line1_str, "V:%d.%dV  I:%d.%02dA", v_int, v_frac, i_int, i_frac);
-        sprintf(line2_str, "P:%d.%dW E:%d.%03dkWh", p_int, p_frac, e_int, e_frac);
+        sprintf(line2_str, "P:%d.%dW E:%d.%03dkWh", p_int, p_frac, e_kwh_int, e_kwh_frac);
     }
 
     sprintf(line3_str, "ROT:%03u BTN:%s", rotary_counter, button_state ? "ON " : "OFF");
@@ -676,8 +702,8 @@ void Display_Power_Meter(void)
 void Timer_Interrupt_Handler(void)
 {
     // Read ADC values from real sensors (production pins)
-    uint32_t voltage_adc = Get_ADC_Value(ADC_CHANNEL_3);  // PA3 - Real voltage input
-    uint32_t current_adc = Get_ADC_Value(ADC_CHANNEL_4);  // PA4 - Real current input
+    uint32_t voltage_adc = Get_ADC_Value(ADC_CHANNEL_4);  // PA4 - Real voltage input
+    uint32_t current_adc = Get_ADC_Value(ADC_CHANNEL_3);  // PA3 - Real current input
 
     // Convert ADC values to real physical quantities
     measured_voltage = Convert_ADC_to_Voltage(voltage_adc);
@@ -1016,7 +1042,7 @@ static void MX_ADC_Init(void)
 
   /** Configure for the selected ADC regular channel to be converted.
   */
-  sConfig.Channel = ADC_CHANNEL_3;  // PA3 - Voltage Input
+  sConfig.Channel = ADC_CHANNEL_3;  // PA3 - Current Input
   sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
   if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
   {
@@ -1025,7 +1051,7 @@ static void MX_ADC_Init(void)
 
   /** Configure for the selected ADC regular channel to be converted.
   */
-  sConfig.Channel = ADC_CHANNEL_4;  // PA4 - Current Input (NOTE: Pin conflict with button!)
+  sConfig.Channel = ADC_CHANNEL_4;  // PA4 - Voltage Input
   if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
   {
     Error_Handler();
