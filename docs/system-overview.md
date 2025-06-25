@@ -4,7 +4,7 @@
 
 Looking at the system architecture diagram below, the power meter is built around three main interrupt sources that drive the entire system:
 
-![System Architecture](system-overview-diagram.png)
+![System Architecture](system-overview-diagram.jpg)
 
 *The diagram above shows how the interrupt system drives the entire power meter operation. The 100ms timer triggers measurements, GPIO interrupts handle user input, and everything flows through the menu system to the display.*
 
