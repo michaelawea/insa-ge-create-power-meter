@@ -26,13 +26,6 @@ All the menu logic is pretty straightforward - there are 7 different states (POW
 
 The graphics system keeps 32 data points of history for voltage, current and power so you can see trends over time. The display functions just read from these buffers and draw whatever menu or graph you're looking at.
 
-## Constants and Calibration
-
-The measurement accuracy depends on these calibration values:
-- Voltage scale factor: 7.32 (converts ADC reading to actual voltage)
-- Current scale factor: 1.22 (converts ADC reading to actual current) 
-- ADC reference: 3.3V with 12-bit resolution (0-4095 counts)
-
 ## Testing the User Interface
 
 When you want to test the device, here's what you do:
