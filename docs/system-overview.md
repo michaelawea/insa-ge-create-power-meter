@@ -54,17 +54,5 @@ When you want to test the device, here's what you do:
 **Getting back** - From any submenu, press the button to go back to the main menu. Or just wait 30 seconds and it'll automatically return to the power display.
 
 The whole interface is pretty simple - just the encoder to navigate and the button to select. If you get lost, wait 30 seconds and you'll be back at the main power display.
-
-## Hardware Setup
-
-The hardware is straightforward:
-- STM32L052K6T6 microcontroller (32KB flash, 8KB RAM)
-- SSD1306 OLED display connected via I2C
-- Voltage measurement on PA4 (through voltage divider)
-- Current measurement on PA3 (from current sensor)
-- Rotary encoder on PB4/PB5 with button on PB3
-
-Everything runs on 3.3V and the measurements update 10 times per second. The graphics buffer holds about 6 seconds worth of data (32 points at 200ms intervals).
-
 ---
 *Written for the STM32L052K6T6 Power Meter project*
