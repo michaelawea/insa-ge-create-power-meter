@@ -26,6 +26,72 @@ All the menu logic is pretty straightforward - there are 7 different states (POW
 
 The graphics system keeps 32 data points of history for voltage, current and power so you can see trends over time. The display functions just read from these buffers and draw whatever menu or graph you're looking at.
 
+## Memory Organization (Plan Mémoire des Variables)
+
+The STM32L052K6T6 has limited memory (32KB Flash, 8KB RAM), so variables are organized efficiently:
+
+**Measurement Variables (RAM: ~24 bytes)**
+```c
+static float measured_voltage = 0.0f;      // Current voltage reading (4 bytes)
+static float measured_current = 0.0f;      // Current current reading (4 bytes) 
+static float calculated_power = 0.0f;      // Calculated power P=V*I (4 bytes)
+static float accumulated_energy = 0.0f;    // Energy accumulator in Wh (4 bytes)
+static uint32_t last_timestamp = 0;        // For energy integration (4 bytes)
+```
+
+**Peak Tracking (RAM: ~12 bytes)**
+```c
+static float peak_voltage = 0.0f;          // Maximum voltage seen (4 bytes)
+static float peak_current = 0.0f;          // Maximum current seen (4 bytes) 
+static float peak_power = 0.0f;            // Maximum power seen (4 bytes)
+```
+
+**Graphics Buffers (RAM: ~384 bytes)**
+```c
+static float voltage_history[32];          // 32 voltage samples (128 bytes)
+static float current_history[32];          // 32 current samples (128 bytes)
+static float power_history[32];            // 32 power samples (128 bytes)
+```
+
+**User Interface State (RAM: ~20 bytes)**
+```c
+static MenuState_t current_menu;           // Current menu state (1 byte)
+static uint8_t menu_selection;             // Menu selection index (1 byte)
+static uint8_t button_state;               // Button state (1 byte)
+static uint8_t rotary_counter;             // Encoder position (1 byte)
+static uint32_t button_press_time;         // For long press detection (4 bytes)
+static uint32_t last_activity_time;        // For 30s timeout (4 bytes)
+```
+
+**Hardware Handles (RAM: ~50 bytes)**
+```c
+ADC_HandleTypeDef hadc;                    // ADC configuration
+I2C_HandleTypeDef hi2c1;                   // I2C for OLED display
+TIM_HandleTypeDef htim6;                   // Timer for 100ms measurements
+```
+
+**Total RAM usage: ~490 bytes out of 8KB available**
+
+## Code Structure and Comments (Code Commenté)
+
+**Main Functions:**
+- `Convert_ADC_to_Voltage()` - Applies calibration factors to convert raw ADC to voltage
+- `Convert_ADC_to_Current()` - Converts ADC reading to current with sensor scaling  
+- `Calculate_Power()` - Simple P = V × I calculation
+- `Update_Energy()` - Integrates power over time to get energy
+- `Update_Peaks()` - Tracks maximum values seen
+- `Handle_Menu_Navigation()` - Processes encoder input for menu navigation
+- `Handle_Menu_Action()` - Processes button presses for menu selection
+
+**Key Constants (Flash memory):**
+```c
+#define VOLTAGE_SCALE_FACTOR    7.32f    // Hardware voltage divider ratio
+#define VOLTAGE_GAIN            1.36f    // Calibration slope correction  
+#define VOLTAGE_OFFSET         -0.962f   // Calibration zero offset
+#define CURRENT_SCALE_FACTOR    1.22f    // Current sensor scaling (5A→3.3V)
+#define GRAPH_DATA_POINTS       32       // Reduced from 64 to save RAM
+```
+
 ## Testing the User Interface
 
 When you want to test the device, here's what you do:
