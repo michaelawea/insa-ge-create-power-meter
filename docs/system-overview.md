@@ -54,5 +54,6 @@ When you want to test the device, here's what you do:
 **Getting back** - From any submenu, press the button to go back to the main menu. Or just wait 30 seconds and it'll automatically return to the power display.
 
 The whole interface is pretty simple - just the encoder to navigate and the button to select. If you get lost, wait 30 seconds and you'll be back at the main power display.
+
 ---
 *Written for the STM32L052K6T6 Power Meter project*
